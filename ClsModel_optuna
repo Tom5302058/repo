@@ -1,0 +1,155 @@
+class ClsModelHistGradientBoostingRegressor():
+    def __init__(self,clsData):
+        df_cve_X = clsData.df_cve_X
+        df_cve_y = clsData.df_cve_y
+        df_t_X = clsData.df_t_X
+        df_cv_X = clsData.df_cv_X
+        df_cv_y = clsData.df_cv_y
+        df_e_X = clsData.df_e_X
+        df_e_y = clsData.df_e_y
+        
+        self.df_cve_X = df_cve_X
+        self.df_cve_y = df_cve_y
+        self.df_t_X = df_t_X
+        self.df_cv_X = df_cv_X
+        self.df_cv_y = df_cv_y
+        self.df_e_X = df_e_X
+        self.df_e_y = df_e_y
+    def Params(self):
+        params = {'loss':'squared_error'\
+                 , 'quantile':0.5\
+                 , 'learning_rate':0.1\
+                 , 'max_iter':100\
+                 , 'max_leaf_nodes':31\
+                 , 'max_depth':2\
+                 , 'min_samples_leaf':20\
+                 , 'l2_regularization':0\
+#                  , 'max_features':1.0\
+                 , 'max_bins':255\
+                 , 'categorical_features':['is_F','is_I','is_M']\
+                 , 'random_state':17\
+                 }
+        self.params = params
+    def model(self,params={}):
+        model_0 = HistGradientBoostingRegressor(**params)
+        model = tfmodel(model_0)
+        return model
+    def objective(self,trial):
+        params = self.params
+        params['loss'] = trial.suggest_categorical('loss',['squared_error','absolute_error','poisson','quantile'])
+        params['quantile'] = trial.suggest_float('quantile',0,1)
+        params['learning_rate'] = trial.suggest_float('learning_rate',1e-2,1e-0)
+        params['max_iter'] = trial.suggest_int('max_iter', 50,150)
+        params['max_leaf_nodes'] = trial.suggest_int('max_leaf_nodes',16,63)
+        params['max_depth'] = trial.suggest_int('max_depth',3,13)
+        params['min_samples_leaf'] = trial.suggest_int('min_samples_leaf',10,30)
+        params['l2_regularization'] = trial.suggest_float('l2_regularization',0,0.5)
+#         params['max_features'] = trial.suggest_float('max_features',0.1,1.0)
+        params['max_bins'] = trial.suggest_int('max_bins',125,255)
+        
+        df_cve_X = self.df_cve_X
+        df_cve_y = self.df_cve_y
+        
+        model = self.model(params)
+        
+        model.fit(df_cve_X,df_cve_y)
+        pred_y = model.predict(df_cve_X)
+        pred_y = np.where(pred_y<0.0,0.0,pred_y)
+        pred_y = np.where(pred_y>30.0,30.0,pred_y)
+        score = RMSLE(df_cve_y.values, pred_y)
+#         score = RMSE(df_cve_y.values, pred_y)
+        return score
+    def optuna(self, n_trials=3, plot_history=False):
+        self.Params()
+        sampler = optuna.samplers.TPESampler(seed=17)
+        optuna.logging.set_verbosity(optuna.logging.CRITICAL)
+        study = optuna.create_study(sampler=sampler,direction='minimize')
+        study.optimize(self.objective, n_trials=n_trials)
+        self.study = study
+        params = self.params
+        self.params = params
+#         print('optuna_best_score_e: ',study.best_value)
+        if plot_history==True:
+            optuna.visualization.matplotlib.plot_optimization_history(study)
+#             fig.show()
+            plt.tight_layout()
+            plt.show()
+    def train_cv(self,n_splits=5,n_repeats=10,seed=0,plot=False):
+        df_cve_X = self.df_cve_X
+        df_cve_y = self.df_cve_y
+        params = self.params
+        
+        lst_models = []
+        lst_score_v = []
+        rskf = RepeatedStratifiedKFold(n_splits=n_splits\
+                                       ,n_repeats=n_repeats\
+                                      , random_state=seed)
+        df_p = pd.DataFrame()
+        for idx_c,idx_v in tqdm(rskf.split(df_cve_X,df_cve_y)):
+            df_c_X = df_cve_X.iloc[idx_c]
+            df_c_y = df_cve_y.iloc[idx_c]
+            df_v_X = df_cve_X.iloc[idx_v]
+            df_v_y = df_cve_y.iloc[idx_v]
+            model = self.model(params)
+            model.fit(df_c_X,df_c_y)
+            pred = model.predict(df_v_X)
+            pred = np.where(pred<0.0,0.0,pred)
+            pred = np.where(pred>30.0,30.0,pred)
+            score = RMSLE(df_v_y.values,pred)
+#             score = RMSE(df_v_y.values,pred)
+            lst_models.append(model)
+            lst_score_v.append(score)
+            df_0 = pd.Series(pred,index=df_v_X.index,name='p')
+            df_p = pd.concat([df_p,df_0],axis='columns')
+        self.lst_models = lst_models
+        self.lst_score_v = lst_score_v
+        self.df_p = df_p
+        df_q = df_p.agg([np.mean,np.std],axis='columns')
+        self.df_e_ps = df_q
+        
+        df_r = pd.concat([df_cve_y,df_q],axis='columns')
+        self.df_r = df_r
+        if plot==True:
+            arr_p = lst_score_v
+            fig,axes=plt.subplots(2,2)
+
+            ax=axes[0][0]
+            ax.set_title('lst_score_v')
+            sns.boxplot(x=arr_p,ax=ax,color='lightgreen')
+            ax=axes[1][0]
+            sns.histplot(arr_p,ax=ax,color='lightgreen')
+            
+            ax=axes[0][1]
+            ax.set_title('mean vs Rings')
+            sns.scatterplot(data=df_r,x='mean',y='Rings'\
+                            ,hue='std',legend='brief'\
+                            ,palette='crest',alpha=0.4,ax=ax)
+            x=np.linspace(0,30,100)
+            sns.lineplot(x=x,y=x,color='red',linestyle='--',ax=ax)
+            ax.legend(bbox_to_anchor=(1.05,1),loc='upper left')
+            
+            ax=axes[1][1]
+            ax.set_title('mean vs Rings')
+            sns.scatterplot(data=df_r,y='mean',x='Rings'\
+                            ,hue='std',legend='brief'\
+                            ,palette='crest',alpha=0.4,ax=ax)
+            x=np.linspace(0,30,100)
+            sns.lineplot(x=x,y=x,color='red',linestyle='--',ax=ax)
+            ax.legend(bbox_to_anchor=(1.05,1),loc='upper left')
+            
+            fig.tight_layout()
+            plt.show()
+
+    def predict_t(self):
+        df_t_X = self.df_t_X
+        lst_models = self.lst_models
+        df_p = pd.DataFrame()
+        for i, model in enumerate(lst_models):
+            pred = model.predict(df_t_X)
+            pred = np.where(pred<0.0,0.0,pred)
+            pred = np.where(pred>30.0,30.0,pred)
+            df_0 = pd.Series(pred,index=df_t_X.index,name='p')
+            df_p = pd.concat([df_p,df_0],axis='columns')
+        df_q = df_p.agg([np.mean,np.std],axis='columns')
+        self.df_t_ps = df_q
+ClsModel = ClsModelHistGradientBoostingRegressor
